@@ -95,12 +95,45 @@ export class MsSqlListDatabases implements INodeType {
             description: 'Override SQL Server port',
           },
           {
+            displayName: 'Username',
+            name: 'user',
+            type: 'string',
+            default: '',
+            placeholder: '={{ $json.username }}',
+            description: 'Override SQL Server username. Use expressions to set dynamically.',
+          },
+          {
+            displayName: 'Password',
+            name: 'password',
+            type: 'string',
+            typeOptions: {
+              password: true,
+            },
+            default: '',
+            placeholder: '={{ $json.password }}',
+            description: 'Override SQL Server password. Use expressions to set dynamically.',
+          },
+          {
             displayName: 'Database',
             name: 'database',
             type: 'string',
             default: '',
             placeholder: '={{ $json.databaseName }}',
             description: 'Override initial database to connect to',
+          },
+          {
+            displayName: 'Encrypt Connection',
+            name: 'encrypt',
+            type: 'boolean',
+            default: false,
+            description: 'Whether to override the encrypt connection setting',
+          },
+          {
+            displayName: 'Trust Server Certificate',
+            name: 'trustServerCertificate',
+            type: 'boolean',
+            default: false,
+            description: 'Whether to override the trust server certificate setting',
           },
         ],
       },
@@ -277,27 +310,36 @@ export class MsSqlListDatabases implements INodeType {
           server?: string;
           instance?: string;
           port?: number;
+          user?: string;
+          password?: string;
           database?: string;
+          encrypt?: boolean;
+          trustServerCertificate?: boolean;
         };
 
         // Build connection config with overrides
         const config: sql.config = {
           server: connectionOverride.server || (credentials.server as string),
           port: connectionOverride.port || (credentials.port as number),
-          user: credentials.user as string,
-          password: credentials.password as string,
+          user: connectionOverride.user || (credentials.user as string),
+          password: connectionOverride.password || (credentials.password as string),
           database: connectionOverride.database || (credentials.database as string) || 'master',
           options: {
-            encrypt: credentials.encrypt as boolean,
-            trustServerCertificate: credentials.trustServerCertificate as boolean,
+            encrypt: connectionOverride.encrypt !== undefined
+              ? connectionOverride.encrypt
+              : (credentials.encrypt as boolean),
+            trustServerCertificate: connectionOverride.trustServerCertificate !== undefined
+              ? connectionOverride.trustServerCertificate
+              : (credentials.trustServerCertificate as boolean),
             enableArithAbort: true,
           },
         };
 
         // Add instance name if provided (override takes precedence)
-        const instanceName = connectionOverride.instance || credentials.instance;
+        const instanceName = connectionOverride.instance || (credentials.instance as string);
         if (instanceName) {
-          config.options!.instanceName = instanceName as string;
+          config.options = config.options || {};
+          config.options.instanceName = instanceName;
         }
 
         // Get options
@@ -321,14 +363,33 @@ export class MsSqlListDatabases implements INodeType {
 
           // Set timeout if specified
           if (options.timeout) {
-            request.timeout = options.timeout;
+            (request as unknown as { timeout: number }).timeout = options.timeout;
           }
 
           // Add parameters if provided
           if (queryParameters.parameters && queryParameters.parameters.length > 0) {
             for (const param of queryParameters.parameters) {
-              const sqlType = (sql as any)[param.type];
-              request.input(param.name, sqlType, param.value);
+              const sqlTypeMap: Record<string, sql.ISqlTypeFactory | ((() => sql.ISqlType) & sql.ISqlTypeFactoryWithNoParams)> = {
+                Int: sql.Int,
+                BigInt: sql.BigInt,
+                VarChar: sql.VarChar,
+                NVarChar: sql.NVarChar,
+                Text: sql.Text,
+                Bit: sql.Bit,
+                Float: sql.Float,
+                Decimal: sql.Decimal,
+                DateTime: sql.DateTime,
+                Date: sql.Date,
+              };
+              const sqlType = sqlTypeMap[param.type];
+              if (!sqlType) {
+                throw new NodeOperationError(
+                  this.getNode(),
+                  `Unsupported SQL type: ${param.type}`,
+                  { itemIndex: i },
+                );
+              }
+              request.input(param.name, sqlType as (() => sql.ISqlType) & sql.ISqlTypeFactoryWithNoParams, param.value);
             }
           }
 
@@ -392,7 +453,7 @@ export class MsSqlListDatabases implements INodeType {
 
           // Set timeout if specified
           if (options.timeout) {
-            request.timeout = options.timeout;
+            (request as unknown as { timeout: number }).timeout = options.timeout;
           }
 
           // Execute query
@@ -407,16 +468,17 @@ export class MsSqlListDatabases implements INodeType {
           }
         }
       } catch (error) {
+        const errorMessage = (error as Error).message;
         if (this.continueOnFail()) {
           returnData.push({
             json: {
-              error: error.message,
+              error: errorMessage,
             },
             pairedItem: { item: i },
           });
           continue;
         }
-        throw new NodeOperationError(this.getNode(), `Error: ${error.message}`, {
+        throw new NodeOperationError(this.getNode(), `Error: ${errorMessage}`, {
           itemIndex: i,
         });
       } finally {

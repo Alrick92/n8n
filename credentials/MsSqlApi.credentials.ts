@@ -1,5 +1,4 @@
 import {
-  IAuthenticateGeneric,
   ICredentialType,
   INodeProperties,
 } from 'n8n-workflow';
